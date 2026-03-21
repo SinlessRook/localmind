@@ -8,11 +8,14 @@ const emptyState = document.getElementById('emptyState');
 const timelineList = document.getElementById('timelineList');
 const resultsList = document.getElementById('resultsList');
 const resultsLabel = document.getElementById('resultsLabel');
+const queryAnswer = document.getElementById('queryAnswer');
 const clearBtn = document.getElementById('clearSearch');
 const indexedCount = document.getElementById('indexedCount');
 const exampleQueries = document.getElementById('exampleQueries');
 
-let searchTimeout = null;
+let refreshTimeout = null;
+
+// let searchTimeout = null;
 
 // ── Init ─────────────────────────────────────────────────────────────────────
 
@@ -56,43 +59,124 @@ async function loadTimeline() {
 
 // ── Search ────────────────────────────────────────────────────────────────────
 
-searchInput.addEventListener('input', () => {
-  clearTimeout(searchTimeout);
-  const q = searchInput.value.trim();
+// ── Search ──────────────────────────────────────────────────────────────────
 
+searchInput.addEventListener('input', () => {
+  // Return to timeline as soon as the search box is cleared.
+  if (!searchInput.value.trim()) {
+    showTimeline();
+  }
+});
+
+searchInput.addEventListener('keydown', (event) => {
+  if (event.key !== 'Enter') return;
+  event.preventDefault();
+
+  const q = searchInput.value.trim();
   if (!q) {
     showTimeline();
     return;
   }
 
-  searchTimeout = setTimeout(() => runSearch(q), 350);
+  runSearch(q);
 });
 
 async function runSearch(query) {
   showSpinner(true);
   exampleQueries.classList.add('hidden');
-
-  const response = await bgMessage({ type: 'SEARCH_QUERY', query });
-  const results = response?.results || [];
-
-  showSpinner(false);
+  queryAnswer.classList.add('hidden');
+  queryAnswer.textContent = '';
 
   timelineSection.classList.add('hidden');
   resultsSection.classList.remove('hidden');
   emptyState.classList.add('hidden');
 
-  resultsLabel.textContent = `${results.length} result${results.length !== 1 ? 's' : ''} for "${query}"`;
+  try {
+    // Stage 1: Get local vector search results immediately (up to 3).
+    const localResults = await getLocalVectorResults(query);
+    
+    showSpinner(false);
+    resultsLabel.textContent = `${localResults.length} result${localResults.length !== 1 ? 's' : ''} for "${query}"`;
 
-  if (results.length === 0) {
-    resultsList.innerHTML = '';
-    emptyState.classList.remove('hidden');
-    return;
+    if (localResults.length === 0) {
+      resultsList.innerHTML = '';
+      emptyState.classList.remove('hidden');
+      queryAnswer.classList.add('hidden');
+    } else {
+      resultsList.innerHTML = '';
+      localResults.forEach((page, i) => {
+        resultsList.appendChild(createCard(page, i * 40, query));
+      });
+    }
+
+    // Stage 2: Show pending state and fetch AI answer in background.
+    displayPendingAnswer();
+    fetchAIAnswer(query);
+
+  } catch (err) {
+    showSpinner(false);
+    console.error('[LocalMind] Search failed:', err);
+    queryAnswer.textContent = 'Search failed. Try again.';
+    queryAnswer.classList.remove('hidden');
   }
+}
 
-  resultsList.innerHTML = '';
-  results.forEach((page, i) => {
-    resultsList.appendChild(createCard(page, i * 40, query));
-  });
+function displayPendingAnswer() {
+  queryAnswer.innerHTML = '<div class="answer-pending">⏳ Summarizing answer...</div>';
+  queryAnswer.classList.remove('hidden');
+}
+
+async function getLocalVectorResults(query) {
+  const response = await bgMessage({ type: 'SEARCH_QUERY', query });
+  const results = response?.results || [];
+  return results.slice(0, 3);
+}
+
+async function fetchAIAnswer(query) {
+  try {
+    const res = await fetch('http://127.0.0.1:8000/query', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query }),
+      timeout: 120000,
+    });
+
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+    const data = await res.json();
+    const answer = data?.answer || '';
+
+    if (answer) {
+      queryAnswer.textContent = answer;
+      queryAnswer.classList.remove('hidden');
+    }
+  } catch (err) {
+    console.warn('[LocalMind] AI answer fetch failed:', err);
+    queryAnswer.textContent = 'AI response unavailable.';
+  }
+}
+
+
+
+async function refreshSidebarContent() {
+  const activeQuery = searchInput.value.trim();
+  if (activeQuery) {
+    await runSearch(activeQuery);
+  } else {
+    await loadTimeline();
+    showTimeline();
+  }
+  await updateIndexCount();
+}
+
+function scheduleSidebarRefresh() {
+  if (refreshTimeout) clearTimeout(refreshTimeout);
+  // Batch rapid storage writes into one UI refresh.
+  refreshTimeout = setTimeout(() => {
+    refreshSidebarContent().catch((err) => {
+      console.warn('[LocalMind] Failed to refresh sidebar:', err);
+    });
+  }, 120);
 }
 
 // ── Clear search ──────────────────────────────────────────────────────────────
@@ -107,6 +191,8 @@ function showTimeline() {
   resultsSection.classList.add('hidden');
   emptyState.classList.add('hidden');
   exampleQueries.classList.remove('hidden');
+  queryAnswer.classList.add('hidden');
+  queryAnswer.textContent = '';
   showSpinner(false);
 }
 
@@ -234,6 +320,15 @@ function bgMessage(payload) {
     });
   });
 }
+
+// ── Auto-refresh when new pages are indexed ──────────────────────────────────
+
+chrome.storage.onChanged.addListener((changes, areaName) => {
+  if (areaName !== 'local') return;
+  const hasPageUpdate = Object.keys(changes).some((key) => key.startsWith('page_'));
+  if (!hasPageUpdate) return;
+  scheduleSidebarRefresh();
+});
 
 // ── Check for pending query (triggered by browser search) ────────────────────
 
