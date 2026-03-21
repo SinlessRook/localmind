@@ -53,3 +53,7 @@ def search_memory(query_vector, k=3):
             item["semantic_score"] = float(1.0 / (1.0 + max(float(distance), 0.0)))
             results.append(item)
     return results
+
+
+def get_all_memories():
+    return [dict(item) for item in metadata]
