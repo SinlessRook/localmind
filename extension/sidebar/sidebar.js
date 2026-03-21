@@ -234,6 +234,8 @@ function createCard(page, delay = 0, highlight = '') {
     <div class="card-meta">
       <span class="card-domain">${domain}</span>
       <span class="card-time">${time}</span>
+      ${page.sourceType === 'bookmark' ? '<span class="card-tag">bookmark</span>' : ''}
+      ${page.category ? `<span class="card-tag">${page.category.toLowerCase()}</span>` : ''}
       ${page.fromHistory ? '<span class="card-tag">history</span>' : ''}
     </div>
   `;

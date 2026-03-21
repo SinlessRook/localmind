@@ -2,7 +2,8 @@ const PAGE_PREFIX = 'page_';
 const MAX_STORED_PAGES = 2000;
 
 export async function savePageToMemory(record) {
-  const key = PAGE_PREFIX + btoa(encodeURIComponent(record.url)).replace(/[^a-z0-9]/gi, '').slice(0, 40);
+  const stableId = record.memoryId || record.url;
+  const key = PAGE_PREFIX + btoa(encodeURIComponent(stableId)).replace(/[^a-z0-9]/gi, '').slice(0, 40);
   await chrome.storage.local.set({ [key]: record });
   await pruneIfNeeded();
 }
