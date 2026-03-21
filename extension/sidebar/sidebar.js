@@ -1,4 +1,4 @@
-s// sidebar.js — Local Mind Sidebar UI Logic
+// sidebar.js — Local Mind Sidebar UI Logic
 
 const searchInput = document.getElementById('searchInput');
 const searchSpinner = document.getElementById('searchSpinner');
@@ -14,14 +14,14 @@ const exampleQueries = document.getElementById('exampleQueries');
 
 let searchTimeout = null;
 
-// ── Init ────────────────────────────────────────────────────────────────────
+// ── Init ─────────────────────────────────────────────────────────────────────
 
 async function init() {
   await loadTimeline();
   await updateIndexCount();
 }
 
-// ── Timeline (default view) ──────────────────────────────────────────────────
+// ── Timeline (default view) ───────────────────────────────────────────────────
 
 async function loadTimeline() {
   const response = await bgMessage({ type: 'GET_RECENT', limit: 30 });
@@ -44,7 +44,7 @@ async function loadTimeline() {
     const groupEl = document.createElement('div');
     groupEl.className = 'date-group';
     groupEl.innerHTML = `<div class="date-label">${label}</div>`;
-    
+
     group.forEach((page, i) => {
       const card = createCard(page, i * 30);
       groupEl.appendChild(card);
@@ -54,7 +54,7 @@ async function loadTimeline() {
   }
 }
 
-// ── Search ──────────────────────────────────────────────────────────────────
+// ── Search ────────────────────────────────────────────────────────────────────
 
 searchInput.addEventListener('input', () => {
   clearTimeout(searchTimeout);
@@ -65,7 +65,6 @@ searchInput.addEventListener('input', () => {
     return;
   }
 
-  // Debounce 350ms
   searchTimeout = setTimeout(() => runSearch(q), 350);
 });
 
@@ -96,7 +95,7 @@ async function runSearch(query) {
   });
 }
 
-// ── Clear search ─────────────────────────────────────────────────────────────
+// ── Clear search ──────────────────────────────────────────────────────────────
 
 clearBtn.addEventListener('click', () => {
   searchInput.value = '';
@@ -111,7 +110,7 @@ function showTimeline() {
   showSpinner(false);
 }
 
-// ── Example query chips ──────────────────────────────────────────────────────
+// ── Example query chips ───────────────────────────────────────────────────────
 
 document.querySelectorAll('.eq-chip').forEach(btn => {
   btn.addEventListener('click', () => {
@@ -121,7 +120,7 @@ document.querySelectorAll('.eq-chip').forEach(btn => {
   });
 });
 
-// ── Card factory ─────────────────────────────────────────────────────────────
+// ── Card factory ──────────────────────────────────────────────────────────────
 
 function createCard(page, delay = 0, highlight = '') {
   const card = document.createElement('a');
@@ -156,7 +155,7 @@ function createCard(page, delay = 0, highlight = '') {
   return card;
 }
 
-// ── Utilities ────────────────────────────────────────────────────────────────
+// ── Utilities ─────────────────────────────────────────────────────────────────
 
 function highlightKeywords(text, query) {
   if (!query || !text) return text || '';
@@ -191,7 +190,8 @@ function groupByDate(pages) {
   pages.forEach(page => {
     const d = new Date(page.timestamp);
     const today = new Date();
-    const yesterday = new Date(today); yesterday.setDate(today.getDate() - 1);
+    const yesterday = new Date(today);
+    yesterday.setDate(today.getDate() - 1);
 
     let label;
     if (isSameDay(d, today)) label = 'Today';
@@ -220,7 +220,7 @@ async function updateIndexCount() {
   indexedCount.textContent = `${count} page${count !== 1 ? 's' : ''} indexed`;
 }
 
-// ── Background messaging ─────────────────────────────────────────────────────
+// ── Background messaging ──────────────────────────────────────────────────────
 
 function bgMessage(payload) {
   return new Promise((resolve) => {
@@ -235,7 +235,18 @@ function bgMessage(payload) {
   });
 }
 
-// Date group label styles (injected dynamically)
+// ── Check for pending query (triggered by browser search) ────────────────────
+
+async function checkForPendingQuery() {
+  const response = await bgMessage({ type: 'GET_PENDING_QUERY' });
+  if (response?.query) {
+    searchInput.value = response.query;
+    runSearch(response.query);
+  }
+}
+
+// ── Date group label styles ───────────────────────────────────────────────────
+
 const style = document.createElement('style');
 style.textContent = `
   .date-group { margin-bottom: 12px; }
@@ -252,4 +263,6 @@ style.textContent = `
 document.head.appendChild(style);
 
 // ── Start ─────────────────────────────────────────────────────────────────────
+
 init();
+checkForPendingQuery();
