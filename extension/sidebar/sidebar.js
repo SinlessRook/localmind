@@ -20,6 +20,7 @@ let activeSourceFilter = 'all';
 // let searchTimeout = null;
 const themeToggle = document.getElementById('themeToggle');
 const copyToast = document.getElementById('copyToast');
+const queryAnswer = document.getElementById('queryAnswer');
 
 let searchTimeout = null;
 let activeDropdown = null;
@@ -190,16 +191,6 @@ function scheduleSidebarRefresh() {
       console.warn('[LocalMind] Failed to refresh sidebar:', err);
     });
   }, 120);
-  resultsLabel.textContent = `${results.length} result${results.length !== 1 ? 's' : ''} for "${query}"`;
-
-  if (results.length === 0) {
-    resultsList.innerHTML = '';
-    emptyState.classList.remove('hidden');
-    return;
-  }
-
-  resultsList.innerHTML = '';
-  results.forEach((page, i) => resultsList.appendChild(createCard(page, i * 40, query)));
 }
 
 // ── Clear search ──────────────────────────────────────────────────────────────
@@ -594,17 +585,29 @@ async function checkForPendingQuery() {
 
 // ── Auto-refresh on new browser search ───────────────────────────────────────
 
-chrome.storage.onChanged.addListener((changes, area) => {
-  if (area !== 'session') return;
-  if (changes.pendingQuery?.newValue) {
-    searchInput.value = changes.pendingQuery.newValue;
-    runSearch(changes.pendingQuery.newValue);
-  }
-  // Sync theme from sidebar to mini panel
-  if (changes.lmTheme?.newValue) {
-    applyTheme(changes.lmTheme.newValue);
-  }
+chrome.storage.onChanged.addListener((changes, areaName) => {
+  if (areaName !== 'local') return;
+  const hasPageUpdate = Object.keys(changes).some((key) => key.startsWith('page_'));
+  if (!hasPageUpdate) return;
+  scheduleSidebarRefresh();
 });
+
+// ── Date group label styles ───────────────────────────────────────────────────
+
+const style = document.createElement('style');
+style.textContent = `
+  .date-group { margin-bottom: 12px; }
+  .date-label {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-muted);
+    margin-bottom: 6px;
+    padding-left: 2px;
+  }
+`;
+document.head.appendChild(style);
 
 // ── Start ─────────────────────────────────────────────────────────────────────
 
