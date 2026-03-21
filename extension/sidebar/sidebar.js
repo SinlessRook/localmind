@@ -11,6 +11,13 @@ const resultsLabel = document.getElementById('resultsLabel');
 const clearBtn = document.getElementById('clearSearch');
 const indexedCount = document.getElementById('indexedCount');
 const exampleQueries = document.getElementById('exampleQueries');
+const sourceFilters = document.getElementById('sourceFilters');
+const sourceFilterButtons = Array.from(document.querySelectorAll('.source-chip'));
+
+let refreshTimeout = null;
+let activeSourceFilter = 'all';
+
+// let searchTimeout = null;
 const themeToggle = document.getElementById('themeToggle');
 const copyToast = document.getElementById('copyToast');
 
@@ -100,6 +107,89 @@ async function runSearch(query) {
   resultsSection.classList.remove('hidden');
   emptyState.classList.add('hidden');
 
+  try {
+    // Stage 1: Get local vector search results immediately (up to 3).
+    const localResults = await getLocalVectorResults(query, activeSourceFilter);
+    
+    showSpinner(false);
+    resultsLabel.textContent = `${localResults.length} result${localResults.length !== 1 ? 's' : ''} for "${query}"`;
+
+    if (localResults.length === 0) {
+      resultsList.innerHTML = '';
+      emptyState.classList.remove('hidden');
+      queryAnswer.classList.add('hidden');
+    } else {
+      renderGroupedResults(localResults, query);
+    }
+
+    // Stage 2: Show pending state and fetch AI answer in background.
+    displayPendingAnswer();
+    fetchAIAnswer(query);
+
+  } catch (err) {
+    showSpinner(false);
+    console.error('[LocalMind] Search failed:', err);
+    queryAnswer.textContent = 'Search failed. Try again.';
+    queryAnswer.classList.remove('hidden');
+  }
+}
+
+function displayPendingAnswer() {
+  queryAnswer.innerHTML = '<div class="answer-pending">⏳ Summarizing answer...</div>';
+  queryAnswer.classList.remove('hidden');
+}
+
+async function getLocalVectorResults(query, sourceFilter = 'all') {
+  const response = await bgMessage({ type: 'SEARCH_QUERY', query, sourceFilter });
+  const results = response?.results || [];
+  return results.slice(0, 12);
+}
+
+async function fetchAIAnswer(query) {
+  try {
+    const res = await fetch('http://127.0.0.1:8000/query', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query }),
+      timeout: 120000,
+    });
+
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+    const data = await res.json();
+    const answer = data?.answer || '';
+
+    if (answer) {
+      queryAnswer.textContent = answer;
+      queryAnswer.classList.remove('hidden');
+    }
+  } catch (err) {
+    console.warn('[LocalMind] AI answer fetch failed:', err);
+    queryAnswer.textContent = 'AI response unavailable.';
+  }
+}
+
+
+
+async function refreshSidebarContent() {
+  const activeQuery = searchInput.value.trim();
+  if (activeQuery) {
+    await runSearch(activeQuery);
+  } else {
+    await loadTimeline();
+    showTimeline();
+  }
+  await updateIndexCount();
+}
+
+function scheduleSidebarRefresh() {
+  if (refreshTimeout) clearTimeout(refreshTimeout);
+  // Batch rapid storage writes into one UI refresh.
+  refreshTimeout = setTimeout(() => {
+    refreshSidebarContent().catch((err) => {
+      console.warn('[LocalMind] Failed to refresh sidebar:', err);
+    });
+  }, 120);
   resultsLabel.textContent = `${results.length} result${results.length !== 1 ? 's' : ''} for "${query}"`;
 
   if (results.length === 0) {
@@ -116,6 +206,7 @@ async function runSearch(query) {
 
 clearBtn.addEventListener('click', () => {
   searchInput.value = '';
+  setSourceFilter('all');
   showTimeline();
 });
 
@@ -136,6 +227,63 @@ document.querySelectorAll('.eq-chip').forEach(btn => {
     runSearch(btn.dataset.q);
   });
 });
+
+sourceFilters?.addEventListener('click', (event) => {
+  const btn = event.target.closest('.source-chip');
+  if (!btn) return;
+  const nextFilter = btn.dataset.filter || 'all';
+  setSourceFilter(nextFilter);
+  const q = searchInput.value.trim();
+  if (q) runSearch(q);
+});
+
+function setSourceFilter(nextFilter) {
+  activeSourceFilter = nextFilter;
+  sourceFilterButtons.forEach((btn) => {
+    btn.classList.toggle('active', btn.dataset.filter === nextFilter);
+  });
+}
+
+function classifySource(page) {
+  if (page.sourceType === 'bookmark') return 'bookmarks';
+  if (page.fromHistory) return 'history';
+  return 'visited';
+}
+
+function getGroupLabel(groupKey) {
+  if (groupKey === 'bookmarks') return 'Bookmarks';
+  if (groupKey === 'visited') return 'Visited Pages';
+  if (groupKey === 'history') return 'History';
+  return 'Other';
+}
+
+function renderGroupedResults(results, query) {
+  resultsList.innerHTML = '';
+  const groups = {
+    bookmarks: [],
+    visited: [],
+    history: [],
+  };
+  results.forEach((item) => {
+    const source = classifySource(item);
+    if (!groups[source]) groups[source] = [];
+    groups[source].push(item);
+  });
+
+  let cardIndex = 0;
+  ['bookmarks', 'visited', 'history'].forEach((groupKey) => {
+    const items = groups[groupKey];
+    if (!items?.length) return;
+    const groupWrap = document.createElement('div');
+    groupWrap.className = 'results-group';
+    groupWrap.innerHTML = `<div class="results-group-label">${getGroupLabel(groupKey)}</div>`;
+    items.forEach((page) => {
+      groupWrap.appendChild(createCard(page, cardIndex * 35, query));
+      cardIndex += 1;
+    });
+    resultsList.appendChild(groupWrap);
+  });
+}
 
 // ── Card factory ──────────────────────────────────────────────────────────────
 
@@ -165,6 +313,8 @@ function createCard(page, delay = 0, highlight = '') {
     <div class="card-meta">
       <span class="card-domain">${domain}</span>
       <span class="card-time">${time}</span>
+      ${page.sourceType === 'bookmark' ? '<span class="card-tag">bookmark</span>' : ''}
+      ${page.category ? `<span class="card-tag">${page.category.toLowerCase()}</span>` : ''}
       ${page.fromHistory ? '<span class="card-tag">history</span>' : ''}
     </div>
     <button class="card-menu-btn" title="Options">⋯</button>
