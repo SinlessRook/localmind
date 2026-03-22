@@ -1,13 +1,10 @@
 # LocalMind
 
+
 Privacy-first browser memory assistant that helps you semantically search what you have read.
+<!-- Replace with your hosted banner image URL
+![LocalMind Banner](./Screenshots/banner.png) -->
 
-## Banner
-
-<!-- Replace with your hosted banner image URL -->
-![LocalMind Banner](docs/assets/banner.png)
-
-> Suggested size: 1600x500 (or similar wide ratio)
 
 ## Screenshots
 
