@@ -23,9 +23,27 @@
       --text2: #9898aa;
       --text3: #55555f;
       --green: #4ade80;
+      --nav-scrolled-bg: rgba(10,10,12,0.9);
       --serif: 'Fraunces', Georgia, serif;
       --sans: 'Instrument Sans', system-ui, sans-serif;
       --mono: 'DM Mono', monospace;
+    }
+
+    [data-theme="light"] {
+      --bg: #f6f3ec;
+      --bg2: #fffdfa;
+      --bg3: #f1ecdf;
+      --accent: #5f4ae5;
+      --accent2: #7b6cff;
+      --accent-dim: rgba(95,74,229,0.12);
+      --accent-glow: rgba(95,74,229,0.2);
+      --border: #ddd6c6;
+      --border2: #c9c0af;
+      --text: #1f1d1a;
+      --text2: #59544d;
+      --text3: #7a7368;
+      --green: #2f9b63;
+      --nav-scrolled-bg: rgba(246,243,236,0.92);
     }
 
     html { scroll-behavior: smooth; }
@@ -64,9 +82,28 @@
     }
 
     nav.scrolled {
-      background: rgba(10,10,12,0.9);
+      background: var(--nav-scrolled-bg);
       backdrop-filter: blur(12px);
       border-color: var(--border);
+    }
+
+    .theme-toggle-btn {
+      border: 1px solid var(--border2);
+      background: var(--bg2);
+      color: var(--text2);
+      border-radius: 999px;
+      padding: 8px 14px;
+      font-family: var(--mono);
+      font-size: 11px;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .theme-toggle-btn:hover {
+      color: var(--text);
+      border-color: var(--text3);
     }
 
     .nav-logo {
@@ -927,6 +964,7 @@
       <li><a href="#privacy">Privacy</a></li>
       <li><a href="#" class="nav-cta">Add to Chrome</a></li>
     </ul>
+    <button id="themeToggle" class="theme-toggle-btn" type="button">Light</button>
   </nav>
 
   <!-- Hero -->
@@ -1258,11 +1296,39 @@
   </footer>
 
   <script>
+    const THEME_KEY = 'localmind-theme';
+
+    function getInitialTheme() {
+      const saved = localStorage.getItem(THEME_KEY);
+      if (saved === 'dark' || saved === 'light') return saved;
+      return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    }
+
+    function applyTheme(theme) {
+      document.documentElement.setAttribute('data-theme', theme);
+      const themeToggle = document.getElementById('themeToggle');
+      if (themeToggle) {
+        themeToggle.textContent = theme === 'dark' ? 'Light' : 'Dark';
+      }
+    }
+
+    applyTheme(getInitialTheme());
+
     // Nav scroll effect
     const nav = document.getElementById('nav');
     window.addEventListener('scroll', () => {
       nav.classList.toggle('scrolled', window.scrollY > 40);
     });
+
+    const themeToggle = document.getElementById('themeToggle');
+    if (themeToggle) {
+      themeToggle.addEventListener('click', () => {
+        const current = document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
+        const next = current === 'dark' ? 'light' : 'dark';
+        localStorage.setItem(THEME_KEY, next);
+        applyTheme(next);
+      });
+    }
 
     // Scroll reveal
     const reveals = document.querySelectorAll('.reveal');

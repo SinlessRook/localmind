@@ -59,3 +59,7 @@ def search_memory(query_vector, k=3, min_similarity=0.10):
         item["score"] = round(cosine_sim, 4)
         results.append(item)
     return results
+
+
+def get_all_memories():
+    return [dict(item) for item in metadata]
