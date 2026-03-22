@@ -218,6 +218,32 @@
       border-radius: 2px;
       padding: 0 1px;
     }
+    .panel-footer {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding-top: 8px;
+    border-top: 1px solid var(--border-card);
+    flex-shrink: 0;
+  }
+
+kbd {
+  background: var(--accent-dim);
+  border: 1px solid rgba(124,106,247,0.3);
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-family: monospace;
+  font-size: 9px;
+  color: var(--accent);
+  line-height: 1.4;
+}
+
+.panel-footer span {
+  font-size: 9px;
+  color: var(--text-s);
+  font-family: monospace;
+  margin-left: 2px;
+}
   </style>
 </head>
 <body>
@@ -240,8 +266,12 @@
         <div class="skeleton"></div>
       </div>
     </div>
+    <div class="panel-footer">
+      <kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>K</kbd>
+      <span>open full sidebar</span>
+    </div>
   </div>
 
   <script src="injected-panel.js"></script>
 </body>
-</html>
+</html> 
