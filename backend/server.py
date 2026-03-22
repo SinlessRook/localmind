@@ -3,11 +3,13 @@ from pydantic import BaseModel
 from embed import get_embedding
 from memory import add_memory, search_memory, get_all_memories
 import requests
+import json
 import re
 import random
+import time
 from collections import Counter
 from datetime import datetime
-from urllib.parse import urlparse
+from urllib.parse import urlparse, quote
 from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
@@ -22,6 +24,9 @@ app.add_middleware(
 )
 
 OLLAMA_GEN_URL = "http://localhost:11434/api/generate"
+POLLINATIONS_TEXT_URL = "https://text.pollinations.ai"
+POLLINATIONS_COOLDOWN_SECONDS = 300
+POLLINATIONS_COOLDOWN_UNTIL = 0.0
 MATCH_LIMIT = 3
 
 IRRELEVANT_PATTERNS = [
@@ -54,6 +59,7 @@ class EmbedRequest(BaseModel):
 
 class ChatRequest(BaseModel):
     message: str
+    provider: str = "ollama"
 
 
 STOP_WORDS = {
@@ -667,7 +673,80 @@ def retrieve_chat_candidates(user_message: str, per_query_k: int = 14) -> list:
     return candidates[:8]
 
 
-def generate_history_chat_answer(user_message: str, context_items: list) -> str:
+def _generate_with_ollama(prompt: str) -> str:
+    response = requests.post(
+        OLLAMA_GEN_URL,
+        json={
+            "model": "qwen2.5:0.5b",
+            "stream": False,
+            "prompt": prompt,
+        },
+        timeout=60,
+    )
+    return response.json().get("response", "").strip()
+
+
+def _generate_with_pollinations(prompt: str) -> str:
+    # Try OpenAI-compatible chat endpoint first.
+    try:
+        response = requests.post(
+            f"{POLLINATIONS_TEXT_URL}/openai",
+            json={
+                "model": "openai",
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.2,
+            },
+            timeout=20,
+        )
+        if response.status_code >= 400:
+            raise RuntimeError(f"Pollinations /openai HTTP {response.status_code}: {response.text[:200]}")
+        data = response.json()
+        if isinstance(data, dict):
+            if data.get("error") or int(data.get("status") or 0) >= 400:
+                raise RuntimeError(f"Pollinations /openai error payload: {str(data)[:300]}")
+            choices = data.get("choices") or []
+            if choices:
+                msg = choices[0].get("message") or {}
+                content = (msg.get("content") or "").strip()
+                if content:
+                    return content
+            content = (data.get("response") or data.get("text") or "").strip()
+            if content:
+                return content
+    except Exception:
+        pass
+
+    # Fallback to raw text endpoint.
+    encoded = quote(prompt[:1800])
+    response = requests.get(
+        f"{POLLINATIONS_TEXT_URL}/{encoded}?model=openai",
+        timeout=20,
+    )
+    if response.status_code >= 400:
+        raise RuntimeError(f"Pollinations text HTTP {response.status_code}: {response.text[:200]}")
+
+    text = (response.text or "").strip()
+    if text.startswith("{"):
+      try:
+          payload = json.loads(text)
+          if isinstance(payload, dict) and (payload.get("error") or int(payload.get("status") or 0) >= 400):
+              raise RuntimeError(f"Pollinations text error payload: {str(payload)[:300]}")
+      except json.JSONDecodeError:
+          pass
+    return text
+
+
+def _pollinations_available() -> bool:
+    return time.time() >= POLLINATIONS_COOLDOWN_UNTIL
+
+
+def _mark_pollinations_down(reason: Exception) -> None:
+    global POLLINATIONS_COOLDOWN_UNTIL
+    POLLINATIONS_COOLDOWN_UNTIL = time.time() + POLLINATIONS_COOLDOWN_SECONDS
+    print(f"Pollinations temporarily disabled for {POLLINATIONS_COOLDOWN_SECONDS}s: {reason}")
+
+
+def generate_history_chat_answer(user_message: str, context_items: list, provider: str = "ollama") -> str:
     if not context_items:
         return "I checked your history and found no strong matches yet. Give me a more specific clue like site name, topic, or time window."
 
@@ -703,17 +782,35 @@ User Message:
 Mike Ross:
 """
 
+    provider_norm = (provider or "ollama").strip().lower()
     try:
-        response = requests.post(
-            OLLAMA_GEN_URL,
-            json={
-                "model": "qwen2.5:0.5b",
-                "stream": False,
-                "prompt": prompt,
-            },
-            timeout=60,
-        )
-        raw = response.json().get("response", "History was retrieved, but a response could not be generated right now.").strip()
+        raw = ""
+
+        if provider_norm == "pollinations":
+            if _pollinations_available():
+                try:
+                    raw = _generate_with_pollinations(prompt)
+                except Exception as pollinations_err:
+                    _mark_pollinations_down(pollinations_err)
+            if not raw:
+                try:
+                    raw = _generate_with_ollama(prompt)
+                except Exception as ollama_err:
+                    print("Ollama Fallback Error:", ollama_err)
+        else:
+            try:
+                raw = _generate_with_ollama(prompt)
+            except Exception as ollama_err:
+                print("Ollama Error:", ollama_err)
+            if not raw:
+                if _pollinations_available():
+                    try:
+                        raw = _generate_with_pollinations(prompt)
+                    except Exception as pollinations_err:
+                        _mark_pollinations_down(pollinations_err)
+
+        if not raw:
+            raw = "History was retrieved, but a response could not be generated right now."
         voiced = _normalize_mike_voice(raw)
         return _add_mike_flair(voiced, user_message)
     except Exception as e:
@@ -735,6 +832,7 @@ Mike Ross:
 def chat_history(req: ChatRequest):
     try:
         message = (req.message or "").strip()
+        provider = (req.provider or "ollama").strip().lower()
         if len(message) < 2:
             return {
                 "bot": "Mike Ross",
@@ -754,7 +852,7 @@ def chat_history(req: ChatRequest):
 
         ranked = retrieve_chat_candidates(message, per_query_k=14)
 
-        reply = generate_history_chat_answer(message, ranked)
+        reply = generate_history_chat_answer(message, ranked, provider=provider)
         sources = _chat_sources_from_results(ranked)
 
         return {

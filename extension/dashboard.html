@@ -379,6 +379,30 @@
 			border-color: var(--accent);
 		}
 
+		.provider-toggle {
+			display: grid;
+			grid-template-columns: 1fr 1fr;
+			gap: 6px;
+		}
+
+		.provider-btn {
+			border: 1px solid var(--border2);
+			background: var(--bg2);
+			color: var(--text2);
+			border-radius: 999px;
+			padding: 7px 10px;
+			font-size: 0.72rem;
+			font-family: var(--mono);
+			cursor: pointer;
+			transition: all 0.15s;
+		}
+
+		.provider-btn.active {
+			color: #fff;
+			background: var(--accent);
+			border-color: transparent;
+		}
+
 		.chat-typing {
 			display: inline-flex;
 			align-items: center;
@@ -542,6 +566,12 @@
 					</form>
 				</div>
 				<aside class="chat-side">
+					<h4>Model Provider</h4>
+					<div id="providerToggle" class="provider-toggle">
+						<button class="provider-btn" type="button" data-provider="ollama">Ollama</button>
+						<button class="provider-btn" type="button" data-provider="pollinations">Pollinations</button>
+					</div>
+					
 					<h4>Quick Prompts</h4>
 					<div class="chat-quick">
 						<button class="chat-chip" type="button" data-q="What did I read today about chess?">Today + chess</button>
