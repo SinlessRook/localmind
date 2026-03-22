@@ -1,4 +1,5 @@
 const API_BASE = 'http://127.0.0.1:8000';
+const CHAT_PROVIDER_KEY = 'localmind-chat-provider';
 
 const state = {
 	data: null,
@@ -7,6 +8,7 @@ const state = {
 	onlyTimed: false,
 	charts: {},
 	typingTimer: null,
+	chatProvider: 'ollama',
 };
 
 const WAITING_MESSAGES = [
@@ -39,6 +41,7 @@ const els = {
 	downloadBtn: document.getElementById('downloadBtn'),
 	lastSync: document.getElementById('lastSync'),
 	errorMsg: document.getElementById('errorMsg'),
+	providerToggle: document.getElementById('providerToggle'),
 };
 
 els.refreshBtn.addEventListener('click', loadAnalytics);
@@ -57,6 +60,25 @@ els.onlyTimedBtn.addEventListener('click', () => {
 	applyFilters();
 });
 els.downloadBtn.addEventListener('click', downloadData);
+
+function setChatProvider(provider, persist = true) {
+	const normalized = provider === 'pollinations' ? 'pollinations' : 'ollama';
+	state.chatProvider = normalized;
+	if (persist) localStorage.setItem(CHAT_PROVIDER_KEY, normalized);
+	document.querySelectorAll('.provider-btn').forEach((btn) => {
+		btn.classList.toggle('active', btn.dataset.provider === normalized);
+	});
+}
+
+function initChatProvider() {
+	const saved = localStorage.getItem(CHAT_PROVIDER_KEY);
+	setChatProvider(saved || 'ollama', false);
+	els.providerToggle?.addEventListener('click', (event) => {
+		const btn = event.target.closest('.provider-btn');
+		if (!btn) return;
+		setChatProvider(btn.dataset.provider || 'ollama', true);
+	});
+}
 
 function formatNumber(n) {
 	return new Intl.NumberFormat().format(n || 0);
@@ -160,6 +182,7 @@ async function bootstrap() {
 
 	const openSidebarBtn = document.getElementById('openSidebarBtn');
 	if (openSidebarBtn) openSidebarBtn.addEventListener('click', () => openMemorySidebar());
+	initChatProvider();
 
 	await loadAnalytics();
 	consumeChatFromUrl();
@@ -379,7 +402,7 @@ async function onChatSubmit(event) {
 		const res = await fetch(`${API_BASE}/chat-history`, {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ message }),
+			body: JSON.stringify({ message, provider: state.chatProvider }),
 		});
 		if (!res.ok) throw new Error(`HTTP ${res.status}`);
 		const data = await res.json();
