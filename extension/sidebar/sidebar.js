@@ -13,6 +13,11 @@ const indexedCount = document.getElementById('indexedCount');
 const exampleQueries = document.getElementById('exampleQueries');
 const sourceFilters = document.getElementById('sourceFilters');
 const sourceFilterButtons = Array.from(document.querySelectorAll('.source-chip'));
+const recordToggleBtn = document.getElementById('recordToggleBtn');
+const recordIcon = document.getElementById('recordIcon');
+const recordLabel = document.getElementById('recordLabel');
+const settingsBtn = document.getElementById('settingsBtn');
+const settingsMenu = document.getElementById('settingsMenu');
 
 let refreshTimeout = null;
 let activeSourceFilter = 'all';
@@ -26,6 +31,29 @@ let searchTimeout = null;
 let activeDropdown = null;
 /** True only when the current search text came from GET_PENDING_QUERY (SERP auto-fill). */
 let searchFromAutoSerp = false;
+let recordingEnabled = true;
+
+
+function applyRecordingState(enabled) {
+  recordingEnabled = enabled !== false;
+  if (!recordToggleBtn) return;
+  if (recordIcon) {
+    recordIcon.textContent = recordingEnabled ? '⏺' : '⏸';
+  }
+  if (recordLabel) {
+    recordLabel.textContent = recordingEnabled ? 'REC' : 'PAUSED';
+  }
+  recordToggleBtn.title = recordingEnabled
+    ? 'Recording is enabled. Click to pause.'
+    : 'Recording is paused. Click to resume.';
+  recordToggleBtn.classList.toggle('paused', !recordingEnabled);
+}
+
+
+async function initRecordingState() {
+  const response = await bgMessage({ type: 'GET_RECORDING_STATE' });
+  applyRecordingState(response?.enabled !== false);
+}
 
 // ── Theme ─────────────────────────────────────────────────────────────────────
 
@@ -78,11 +106,13 @@ themeToggle.addEventListener('click', async () => {
     chrome.storage.session.set({ lmTheme: next });
   }
   applyTheme(next);
+  settingsMenu?.classList.add('hidden');
 });
 
 const openDashboardBtn = document.getElementById('openDashboardBtn');
 openDashboardBtn?.addEventListener('click', () => {
   chrome.tabs.create({ url: chrome.runtime.getURL('dashboard.html') });
+  settingsMenu?.classList.add('hidden');
 });
 
 document.getElementById('openHomeBtn')?.addEventListener('click', () => {
@@ -93,9 +123,27 @@ document.getElementById('openHomeBtn')?.addEventListener('click', () => {
 
 async function init() {
   await initTheme();
+  await initRecordingState();
   await loadTimeline();
   await updateIndexCount();
 }
+
+recordToggleBtn?.addEventListener('click', async () => {
+  const next = !recordingEnabled;
+  const response = await bgMessage({ type: 'SET_RECORDING_STATE', enabled: next });
+  applyRecordingState(response?.enabled !== false);
+  showToast(response?.enabled === false ? 'Recording paused' : 'Recording resumed');
+  settingsMenu?.classList.add('hidden');
+});
+
+settingsBtn?.addEventListener('click', (event) => {
+  event.stopPropagation();
+  settingsMenu?.classList.toggle('hidden');
+});
+
+settingsMenu?.addEventListener('click', (event) => {
+  event.stopPropagation();
+});
 
 // ── Timeline ──────────────────────────────────────────────────────────────────
 
@@ -132,20 +180,49 @@ searchInput.addEventListener('input', () => {
   clearTimeout(searchTimeout);
   const q = searchInput.value.trim();
   if (!q) { showTimeline(); return; }
-  searchTimeout = setTimeout(() => runSearch(q), 350);
+  searchTimeout = setTimeout(() => runSearch(q, { allowTabSwitch: false }), 350);
 });
 
 searchInput.addEventListener('keydown', (e) => {
   if (e.key !== 'Enter' || e.isComposing) return;
   const q = searchInput.value.trim();
+
+  if (shouldUseSemanticTabSwitcher(q)) {
+    e.preventDefault();
+    clearTimeout(searchTimeout);
+    runSearch(q, { allowTabSwitch: true });
+    return;
+  }
+
   if (!q || !shouldRouteToMikeRoss(q)) return;
   e.preventDefault();
   openDashboardWithChatQuery(q);
 });
 
-async function runSearch(query) {
+async function runSearch(query, options = {}) {
+  const allowTabSwitch = options?.allowTabSwitch === true;
   showSpinner(true);
   exampleQueries.classList.add('hidden');
+
+  // Command-style tab switching: trigger only after Enter.
+  if (shouldUseSemanticTabSwitcher(query) && allowTabSwitch) {
+    const semanticQuery = extractSemanticTabIntent(query);
+    await runSemanticTabSwitch(semanticQuery, query);
+    showSpinner(false);
+    return;
+  }
+
+  if (shouldUseSemanticTabSwitcher(query) && !allowTabSwitch) {
+    showSpinner(false);
+    timelineSection.classList.add('hidden');
+    resultsSection.classList.remove('hidden');
+    emptyState.classList.add('hidden');
+    resultsList.innerHTML = '';
+    resultsLabel.textContent = 'Tab switch command detected';
+    queryAnswer.innerHTML = '<div class="answer-mike-hint">Press <kbd>Enter</kbd> to switch to the best matching tab.</div>';
+    queryAnswer.classList.remove('hidden');
+    return;
+  }
 
   const response = await bgMessage({ type: 'SEARCH_QUERY', query });
   const results = response?.results || [];
@@ -188,6 +265,38 @@ async function runSearch(query) {
   }
 }
 
+async function runSemanticTabSwitch(intentQuery, originalQuery) {
+  try {
+    const response = await bgMessage({ type: 'SEMANTIC_TAB_SWITCH', query: intentQuery });
+
+    timelineSection.classList.add('hidden');
+    resultsSection.classList.remove('hidden');
+    resultsList.innerHTML = '';
+    emptyState.classList.add('hidden');
+    resultsLabel.textContent = `Tab switch for "${originalQuery}"`;
+
+    if (response?.ok) {
+      const title = response?.switchedTitle || 'Untitled tab';
+      const url = response?.switchedUrl || '';
+      const via = response?.usedLocalLlm ? 'local LLM verified' : 'top semantic match';
+      queryAnswer.innerHTML = `Switched to: <strong>${escapeHtml(title)}</strong><br><span style="opacity:.8">${escapeHtml(url)} · ${via}</span>`;
+      queryAnswer.classList.remove('hidden');
+      showToast('Switched tab');
+      return;
+    }
+
+    const reason = response?.reason || 'No matching tab found.';
+    queryAnswer.textContent = `Could not switch tab: ${reason}`;
+    queryAnswer.classList.remove('hidden');
+    emptyState.classList.remove('hidden');
+  } catch (err) {
+    console.error('[LocalMind] Semantic tab switch failed:', err);
+    queryAnswer.textContent = 'Semantic tab switch failed. Try again.';
+    queryAnswer.classList.remove('hidden');
+    emptyState.classList.remove('hidden');
+  }
+}
+
 function displayPendingAnswer() {
   queryAnswer.innerHTML = '<div class="answer-pending">⏳ Summarizing answer...</div>';
   queryAnswer.classList.remove('hidden');
@@ -220,6 +329,45 @@ function shouldRouteToMikeRoss(raw) {
     /\bpoint\s+me\s+to\s+(the\s+)?(page|link|url|article)\b/,
   ];
   return patterns.some((re) => re.test(q));
+}
+
+function shouldUseSemanticTabSwitcher(raw) {
+  const q = (raw || '').trim().toLowerCase();
+  if (q.length < 6) return false;
+
+  const starts = [
+    /^find\s+(the\s+)?tab\b/,
+    /^switch\s+(to\s+)?(the\s+)?tab\b/,
+    /^switch\s+tab\b/,
+    /^sitch\s+(the\s+)?tab\b/,
+    /^go\s+to\s+(the\s+)?tab\b/,
+    /^open\s+(the\s+)?tab\b/,
+    /^bring\s+me\s+to\s+(the\s+)?tab\b/,
+  ];
+  return starts.some((re) => re.test(q));
+}
+
+function extractSemanticTabIntent(raw) {
+  const q = (raw || '').trim();
+  const stripped = q
+    .replace(/^find\s+(the\s+)?tab\s*/i, '')
+    .replace(/^switch\s+(to\s+)?(the\s+)?tab\s*/i, '')
+    .replace(/^switch\s+tab\s*/i, '')
+    .replace(/^sitch\s+(the\s+)?tab\s*/i, '')
+    .replace(/^go\s+to\s+(the\s+)?tab\s*/i, '')
+    .replace(/^open\s+(the\s+)?tab\s*/i, '')
+    .replace(/^bring\s+me\s+to\s+(the\s+)?tab\s*/i, '')
+    .trim();
+  return stripped || q;
+}
+
+function escapeHtml(text) {
+  return String(text || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 async function getLocalVectorResults(query, sourceFilter = 'all') {
@@ -257,7 +405,7 @@ async function fetchAIAnswer(query) {
 async function refreshSidebarContent() {
   const activeQuery = searchInput.value.trim();
   if (activeQuery) {
-    await runSearch(activeQuery);
+    await runSearch(activeQuery, { allowTabSwitch: false });
   } else {
     await loadTimeline();
     showTimeline();
@@ -280,6 +428,9 @@ function scheduleSidebarRefresh() {
 clearBtn.addEventListener('click', () => {
   searchInput.value = '';
   searchFromAutoSerp = false;
+  resultsList.innerHTML = '';
+  queryAnswer.classList.add('hidden');
+  queryAnswer.textContent = '';
   setSourceFilter('all');
   showTimeline();
 });
@@ -299,7 +450,7 @@ document.querySelectorAll('.eq-chip').forEach(btn => {
     searchFromAutoSerp = false;
     searchInput.value = btn.dataset.q;
     searchInput.focus();
-    runSearch(btn.dataset.q);
+    runSearch(btn.dataset.q, { allowTabSwitch: false });
   });
 });
 
@@ -309,7 +460,7 @@ sourceFilters?.addEventListener('click', (event) => {
   const nextFilter = btn.dataset.filter || 'all';
   setSourceFilter(nextFilter);
   const q = searchInput.value.trim();
-  if (q) runSearch(q);
+  if (q) runSearch(q, { allowTabSwitch: false });
 });
 
 function setSourceFilter(nextFilter) {
@@ -321,14 +472,12 @@ function setSourceFilter(nextFilter) {
 
 function classifySource(page) {
   if (page.sourceType === 'bookmark') return 'bookmarks';
-  if (page.fromHistory) return 'history';
   return 'visited';
 }
 
 function getGroupLabel(groupKey) {
   if (groupKey === 'bookmarks') return 'Bookmarks';
   if (groupKey === 'visited') return 'Visited Pages';
-  if (groupKey === 'history') return 'History';
   return 'Other';
 }
 
@@ -337,7 +486,6 @@ function renderGroupedResults(results, query) {
   const groups = {
     bookmarks: [],
     visited: [],
-    history: [],
   };
   results.forEach((item) => {
     const source = classifySource(item);
@@ -346,7 +494,7 @@ function renderGroupedResults(results, query) {
   });
 
   let cardIndex = 0;
-  ['bookmarks', 'visited', 'history'].forEach((groupKey) => {
+  ['bookmarks', 'visited'].forEach((groupKey) => {
     const items = groups[groupKey];
     if (!items?.length) return;
     const groupWrap = document.createElement('div');
@@ -390,7 +538,6 @@ function createCard(page, delay = 0, highlight = '') {
       <span class="card-time">${time}</span>
       ${page.sourceType === 'bookmark' ? '<span class="card-tag">bookmark</span>' : ''}
       ${page.category ? `<span class="card-tag">${page.category.toLowerCase()}</span>` : ''}
-      ${page.fromHistory ? '<span class="card-tag">history</span>' : ''}
     </div>
     <button class="card-menu-btn" title="Options">⋯</button>
   `;
@@ -462,7 +609,7 @@ dropdown.querySelector('.block-site-btn').addEventListener('click', async (e) =>
       e.preventDefault();
       e.stopPropagation();
       closeActiveDropdown();
-      await bgMessage({ type: 'DELETE_PAGE', url: page.url });
+      await bgMessage({ type: 'DELETE_PAGE', url: page.url, memoryId: page.memoryId || page.id || null });
       card.style.transition = 'all 0.2s ease';
       card.style.opacity = '0';
       card.style.transform = 'translateX(10px)';
@@ -474,7 +621,10 @@ dropdown.querySelector('.block-site-btn').addEventListener('click', async (e) =>
 }
 
 // Close dropdown when clicking outside
-document.addEventListener('click', () => closeActiveDropdown());
+document.addEventListener('click', () => {
+  closeActiveDropdown();
+  settingsMenu?.classList.add('hidden');
+});
 
 function closeActiveDropdown() {
   if (activeDropdown) {
@@ -677,7 +827,7 @@ async function checkForPendingQuery() {
   if (response?.query) {
     searchFromAutoSerp = true;
     searchInput.value = response.query;
-    runSearch(response.query);
+    runSearch(response.query, { allowTabSwitch: false });
   }
 }
 
@@ -737,6 +887,7 @@ document.head.appendChild(style);
 // ── Blacklist panel ───────────────────────────────────────────────────────────
 
 document.getElementById('blacklistBtn').addEventListener('click', () => {
+  settingsMenu?.classList.add('hidden');
   openBlacklistPanel();
 });
 
