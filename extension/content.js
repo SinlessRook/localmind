@@ -1,7 +1,7 @@
 // Injected into every page. Extracts meaningful text after user dwells.
 
 const DWELL_TIME_MS = 1000;
-const MAX_TEXT_LENGTH = 20000;
+const MAX_TEXT_LENGTH = 9000;
 const MAX_CAPTURE_RETRIES = 3;
 
 let dwellTimer = null;
@@ -21,19 +21,30 @@ function extractPageContent() {
   noiseTags.forEach(tag => clone.querySelectorAll(tag).forEach(el => el.remove()));
 
   const mainEl = clone.querySelector('article, main, [role="main"]') || clone;
+  const headingNodes = Array.from(mainEl.querySelectorAll('h1, h2, h3')).slice(0, 18);
+  const headings = headingNodes
+    .map((node) => (node.innerText || node.textContent || '').replace(/\s+/g, ' ').trim())
+    .filter(Boolean)
+    .join('\n');
+
   const rawText = mainEl.innerText || mainEl.textContent || '';
-  const cleanText = rawText.replace(/\s+/g, ' ').trim().slice(0, MAX_TEXT_LENGTH);
+  const bodyText = rawText.replace(/\s+/g, ' ').trim();
+  const cleanText = bodyText.slice(0, MAX_TEXT_LENGTH);
 
   if (cleanText.length < 100) {
     scheduleRetry();
     return;
   }
 
+  const structuredText = [`Title: ${document.title || ''}`, headings ? `Headings:\n${headings}` : '', `Body:\n${cleanText}`]
+    .filter(Boolean)
+    .join('\n\n');
+
   const payload = {
     type: 'PAGE_CONTENT',
     url: location.href,
     title: document.title,
-    text: cleanText,
+    text: structuredText,
     timestamp: Date.now(),
   };
 
