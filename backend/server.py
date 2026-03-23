@@ -1,15 +1,17 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
-from embed import get_embedding
-from memory import add_memory, search_memory, get_all_memories
+from embed import get_embedding, get_embeddings
+from memory import add_memories, search_memory, get_all_memories, get_cluster_count, clear_all_memories
 import requests
 import json
 import re
 import random
 import time
+import os
 from collections import Counter
 from datetime import datetime
 from urllib.parse import urlparse, quote
+from typing import Optional
 from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
@@ -28,6 +30,188 @@ POLLINATIONS_TEXT_URL = "https://text.pollinations.ai"
 POLLINATIONS_COOLDOWN_SECONDS = 300
 POLLINATIONS_COOLDOWN_UNTIL = 0.0
 MATCH_LIMIT = 3
+CHUNK_MIN_TOKENS = 300
+CHUNK_MAX_TOKENS = 500
+CHUNK_OVERLAP_RATIO = 0.15
+MAX_BODY_FOR_INDEXING_CHARS = 9000
+MAX_SECTION_TEXT = 1400
+
+QUERY_EXPANSIONS = {
+    "nuclear": ["radiation", "atomic", "reactor", "fission", "chernobyl", "disaster"],
+    "ai": ["artificial intelligence", "machine learning", "llm", "neural network"],
+    "python": ["programming", "code", "library", "package", "debug"],
+    "cars": ["engine", "automobile", "vehicle", "torque", "fuel"],
+}
+DEBUG_QUERY_EXPANSION = True
+
+NL_FILLER_TERMS = {
+    "i", "me", "my", "mine", "you", "your", "yours", "we", "our", "ours",
+    "the", "a", "an", "to", "for", "of", "on", "in", "at", "from", "with",
+    "about", "that", "this", "these", "those", "it", "is", "are", "was", "were",
+    "do", "did", "does", "can", "could", "would", "should", "please", "show",
+    "find", "search", "look", "tell", "give", "what", "where", "when", "which",
+    "read", "saw", "seen", "page", "pages", "site", "sites", "something", "anything",
+}
+
+DOMAIN_ALIASES = {
+    "youtube": "youtube.com",
+    "wikipedia": "wikipedia.org",
+    "reddit": "reddit.com",
+    "github": "github.com",
+    "stackoverflow": "stackoverflow.com",
+    "stack": "stackoverflow.com",
+    "medium": "medium.com",
+}
+
+MISSPELLINGS = {
+    "explotion": "explosion",
+    "nulear": "nuclear",
+    "chernobly": "chernobyl",
+    "radation": "radiation",
+}
+
+SYNONYM_MAP = {
+    "nuclear": ["atomic", "radiation", "reactor", "fallout"],
+    "explosion": ["blast", "detonation", "disaster", "incident"],
+    "chernobyl": ["ukraine", "reactor", "radiation"],
+    "where": ["location", "place", "site"],
+    "place": ["location", "site", "area"],
+}
+
+TAG_KEYWORDS = {
+    "entertainment": ["movie", "film", "music", "song", "netflix", "youtube", "series", "anime", "game", "gaming", "stream"],
+    "productivity": ["calendar", "notion", "docs", "document", "spreadsheet", "meeting", "todo", "task", "workflow", "schedule"],
+    "learning": ["tutorial", "course", "learn", "lesson", "guide", "documentation", "study", "concept"],
+    "coding": ["code", "coding", "programming", "python", "javascript", "react", "debug", "github", "stackoverflow", "api"],
+    "shopping": ["buy", "price", "deal", "cart", "checkout", "amazon", "flipkart", "product", "review"],
+    "finance": ["bank", "finance", "stock", "trading", "investment", "crypto", "budget", "loan", "tax"],
+    "health": ["health", "fitness", "diet", "workout", "medicine", "symptom", "doctor", "nutrition"],
+    "news": ["news", "headline", "breaking", "update", "report", "politics", "world"],
+    "research": ["paper", "journal", "arxiv", "reference", "citation", "study", "analysis"],
+    "social": ["reddit", "twitter", "x.com", "instagram", "facebook", "post", "thread", "community"],
+    "travel": ["flight", "hotel", "trip", "travel", "booking", "itinerary", "destination"],
+    "security": ["security", "vulnerability", "exploit", "bypass", "auth", "authentication", "login", "username", "password", "token", "csrf", "xss", "sqli"],
+}
+
+SUBTAG_RULES = [
+    {
+        "terms": ["chess", "lichess", "chess.com"],
+        "tags": ["entertainment", "entertainment:games", "entertainment:games:chess"],
+    },
+    {
+        "terms": ["microservice", "microservices", "step up rule"],
+        "tags": ["coding", "coding:architecture", "coding:architecture:microservices"],
+    },
+    {
+        "terms": ["login bypass", "auth bypass", "username", "authentication"],
+        "tags": ["security", "security:auth", "security:auth:login-bypass"],
+    },
+    {
+        "terms": ["palindrome", "edge case", "two pointer"],
+        "tags": ["coding", "coding:algorithms", "coding:algorithms:string"],
+    },
+]
+
+QUERY_KNOWLEDGE_FILE = os.getenv(
+    "LOCALMIND_QUERY_KNOWLEDGE_FILE",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "query_knowledge.json"),
+)
+
+
+def _build_correction_vocab() -> list:
+    return sorted(set(
+        list(SYNONYM_MAP.keys())
+        + [v for values in SYNONYM_MAP.values() for v in values]
+        + list(DOMAIN_ALIASES.keys())
+        + [v.split(".")[0] for v in DOMAIN_ALIASES.values()]
+    ))
+
+
+CORRECTION_VOCAB = _build_correction_vocab()
+
+
+def _merge_map_list(base: dict, extra: dict) -> dict:
+    if not isinstance(extra, dict):
+        return base
+    for k, values in extra.items():
+        key = str(k or "").strip().lower()
+        if not key:
+            continue
+        incoming = []
+        if isinstance(values, list):
+            incoming = [str(v).strip().lower() for v in values if str(v).strip()]
+        elif isinstance(values, str):
+            incoming = [values.strip().lower()] if values.strip() else []
+        existing = [str(v).strip().lower() for v in base.get(key, []) if str(v).strip()]
+        seen = set(existing)
+        for item in incoming:
+            if item not in seen:
+                existing.append(item)
+                seen.add(item)
+        if existing:
+            base[key] = existing
+    return base
+
+
+def _merge_map_scalar(base: dict, extra: dict) -> dict:
+    if not isinstance(extra, dict):
+        return base
+    for k, v in extra.items():
+        key = str(k or "").strip().lower()
+        value = str(v or "").strip().lower()
+        if key and value:
+            base[key] = value
+    return base
+
+
+def _merge_subtag_rules(base: list, extra: list) -> list:
+    if not isinstance(extra, list):
+        return base
+    out = list(base)
+    for rule in extra:
+        if not isinstance(rule, dict):
+            continue
+        terms = [str(t).strip().lower() for t in (rule.get("terms") or []) if str(t).strip()]
+        tags = [str(t).strip().lower() for t in (rule.get("tags") or []) if str(t).strip()]
+        if not terms or not tags:
+            continue
+        out.append({"terms": terms, "tags": tags})
+    return out
+
+
+def _load_query_knowledge_pack() -> dict:
+    if not os.path.exists(QUERY_KNOWLEDGE_FILE):
+        return {}
+    try:
+        with open(QUERY_KNOWLEDGE_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception as e:
+        print("[QueryKnowledge] load failed:", e)
+        return {}
+
+
+def _apply_query_knowledge_pack() -> None:
+    global QUERY_EXPANSIONS, DOMAIN_ALIASES, MISSPELLINGS, SYNONYM_MAP, TAG_KEYWORDS, SUBTAG_RULES, NL_FILLER_TERMS, CORRECTION_VOCAB
+    data = _load_query_knowledge_pack()
+    if not data:
+        return
+
+    QUERY_EXPANSIONS = _merge_map_list(QUERY_EXPANSIONS, data.get("query_expansions") or {})
+    DOMAIN_ALIASES = _merge_map_scalar(DOMAIN_ALIASES, data.get("domain_aliases") or {})
+    MISSPELLINGS = _merge_map_scalar(MISSPELLINGS, data.get("misspellings") or {})
+    SYNONYM_MAP = _merge_map_list(SYNONYM_MAP, data.get("synonym_map") or {})
+    TAG_KEYWORDS = _merge_map_list(TAG_KEYWORDS, data.get("tag_keywords") or {})
+    SUBTAG_RULES = _merge_subtag_rules(SUBTAG_RULES, data.get("subtag_rules") or [])
+
+    filler = data.get("filler_terms") or []
+    if isinstance(filler, list):
+        NL_FILLER_TERMS = set(list(NL_FILLER_TERMS) + [str(x).strip().lower() for x in filler if str(x).strip()])
+
+    CORRECTION_VOCAB = _build_correction_vocab()
+
+
+_apply_query_knowledge_pack()
 
 IRRELEVANT_PATTERNS = [
     r"\bcookie(s)?\b",
@@ -49,6 +233,7 @@ class Page(BaseModel):
     url: str
     title: str
     content: str
+    timestamp: Optional[float] = None
 
 class Query(BaseModel):
     query: str
@@ -150,6 +335,361 @@ def _extract_domain(url: str) -> str:
 def _extract_keywords(text: str) -> list:
     words = re.findall(r"[a-zA-Z]{4,}", (text or "").lower())
     return [w for w in words if w not in STOP_WORDS]
+
+
+def _token_count(text: str) -> int:
+    return len(re.findall(r"\w+", text or ""))
+
+
+def _safe_timestamp(value) -> float:
+    try:
+        tsf = float(value)
+        if tsf > 1e12:
+            tsf /= 1000.0
+        return tsf
+    except Exception:
+        return float(datetime.now().timestamp())
+
+
+def _split_body_sections(text: str):
+    cleaned = _clean_text(text)[:MAX_BODY_FOR_INDEXING_CHARS]
+    if not cleaned:
+        return [], ""
+
+    lines = [ln.strip() for ln in re.split(r"\n+", text or "") if ln.strip()]
+    headings = []
+    body_parts = []
+    for line in lines:
+        compact = _clean_text(line)
+        if not compact:
+            continue
+        is_heading = (
+            len(compact) <= 110
+            and (_token_count(compact) <= 14)
+            and (compact.endswith(":") or compact.istitle() or compact.isupper())
+        )
+        if is_heading:
+            headings.append(compact)
+        else:
+            body_parts.append(compact)
+
+    body_text = _clean_text(" ".join(body_parts))
+    if not body_text:
+        body_text = cleaned
+    return headings[:20], body_text
+
+
+def _chunk_by_tokens(text: str, min_tokens: int = CHUNK_MIN_TOKENS, max_tokens: int = CHUNK_MAX_TOKENS, overlap_ratio: float = CHUNK_OVERLAP_RATIO) -> list:
+    words = re.findall(r"\S+", text or "")
+    if not words:
+        return []
+
+    if len(words) <= max_tokens:
+        return [" ".join(words)]
+
+    overlap = max(1, int(max_tokens * overlap_ratio))
+    step = max(min_tokens, max_tokens - overlap)
+
+    out = []
+    i = 0
+    while i < len(words):
+        chunk_words = words[i : i + max_tokens]
+        if not chunk_words:
+            break
+        out.append(" ".join(chunk_words))
+        if i + max_tokens >= len(words):
+            break
+        i += step
+    return out
+
+
+def _expand_query(query: str) -> str:
+    cleaned = _clean_text(query).lower()
+    if not cleaned:
+        return ""
+    terms = re.findall(r"[a-zA-Z]{2,}", cleaned)
+    expanded = list(terms)
+    for t in terms:
+        expanded.extend(QUERY_EXPANSIONS.get(t, []))
+    seen = set()
+    dedup = []
+    for t in expanded:
+        if t not in seen:
+            dedup.append(t)
+            seen.add(t)
+    return " ".join(dedup[:24])
+
+
+def _extract_domain_hint(text: str) -> str:
+    lower = (text or "").lower()
+    direct = re.search(r"\b([a-z0-9-]+\.(com|org|net|io|dev|ai|in))\b", lower)
+    if direct:
+        return direct.group(1)
+    for alias, domain in DOMAIN_ALIASES.items():
+        if re.search(rf"\b{re.escape(alias)}\b", lower):
+            return domain
+    return ""
+
+
+def _edit_distance(a: str, b: str) -> int:
+    m = len(a)
+    n = len(b)
+    dp = [[0] * (n + 1) for _ in range(m + 1)]
+    for i in range(m + 1):
+        dp[i][0] = i
+    for j in range(n + 1):
+        dp[0][j] = j
+    for i in range(1, m + 1):
+        for j in range(1, n + 1):
+            cost = 0 if a[i - 1] == b[j - 1] else 1
+            dp[i][j] = min(
+                dp[i - 1][j] + 1,
+                dp[i][j - 1] + 1,
+                dp[i - 1][j - 1] + cost,
+            )
+    return dp[m][n]
+
+
+def _correct_token(token: str) -> str:
+    if not token or len(token) < 5:
+        return token
+    if token in MISSPELLINGS:
+        return MISSPELLINGS[token]
+
+    best = token
+    best_dist = 99
+    for candidate in CORRECTION_VOCAB:
+        dist = _edit_distance(token, candidate)
+        if dist < best_dist:
+            best = candidate
+            best_dist = dist
+
+    return best if best_dist <= 2 else token
+
+
+def _dedupe_stable(tokens: list) -> list:
+    out = []
+    seen = set()
+    for t in tokens:
+        if not t or t in seen:
+            continue
+        seen.add(t)
+        out.append(t)
+    return out
+
+
+def _expand_tokens(tokens: list) -> list:
+    out = list(tokens)
+    for t in tokens:
+        out.extend(SYNONYM_MAP.get(t, []))
+    return _dedupe_stable(out)
+
+
+def _normalize_token(token: str) -> str:
+    t = (token or "").lower()
+    if len(t) > 5 and t.endswith("ing"):
+        t = t[:-3]
+    elif len(t) > 4 and t.endswith("ed"):
+        t = t[:-2]
+    elif len(t) > 4 and t.endswith("es"):
+        t = t[:-2]
+    elif len(t) > 3 and t.endswith("s"):
+        t = t[:-1]
+    return t
+
+
+def _infer_tags_from_signals(original_text: str, semantic_tokens: list) -> list:
+    lower = (original_text or "").lower()
+    token_set = {_normalize_token(t) for t in (semantic_tokens or []) if t}
+    scored = {}
+
+    for tag, words in TAG_KEYWORDS.items():
+        score = 0.0
+        for w in words:
+            nw = _normalize_token(w)
+            if nw in token_set:
+                score += 1.0
+            if w in lower:
+                score += 0.35
+        if score > 0:
+            scored[tag] = score
+
+    if re.search(r"\b(youtube|netflix|spotify)\b", lower):
+        scored["entertainment"] = scored.get("entertainment", 0.0) + 1.1
+    if re.search(r"\b(github|stackoverflow|leetcode)\b", lower):
+        scored["coding"] = scored.get("coding", 0.0) + 1.1
+    if re.search(r"\b(amazon|flipkart|myntra)\b", lower):
+        scored["shopping"] = scored.get("shopping", 0.0) + 1.1
+
+    ranked = sorted(scored.items(), key=lambda kv: kv[1], reverse=True)
+    top = [tag for tag, score in ranked if score >= 1.0][:4]
+
+    hierarchical = []
+    for rule in SUBTAG_RULES:
+        terms = rule.get("terms") or []
+        tags = rule.get("tags") or []
+        hit = any((term in lower) or (_normalize_token(term) in token_set) for term in terms)
+        if hit:
+            hierarchical.extend(tags)
+
+    return _dedupe_stable(top + hierarchical)[:10]
+
+
+def _extract_quoted_phrases(text: str) -> list:
+    out = []
+    for m in re.finditer(r"['\"`]([^'\"`]{2,64})['\"`]", text or ""):
+        phrase = (m.group(1) or "").strip().lower()
+        if phrase:
+            out.append(phrase)
+    return _dedupe_stable(out)
+
+
+def _extract_entity_phrases(text: str) -> list:
+    lower = (text or "").lower()
+    out = []
+
+    username_match = re.search(
+        r"(?:username|user\s*name|handle|user\s*id)\s*(?:is|was|=|:)?\s*['\"`]?([a-z0-9_.@-]{3,})['\"`]?",
+        lower,
+        flags=re.IGNORECASE,
+    )
+    if username_match and username_match.group(1):
+        out.append(username_match.group(1))
+
+    for phrase in re.findall(r"\b([A-Z][a-zA-Z0-9]+(?:\s+[A-Z][a-zA-Z0-9]+){1,4})\b", text or ""):
+        s = (phrase or "").strip().lower()
+        if s:
+            out.append(s)
+
+    return _dedupe_stable([x for x in out if len(x) >= 3])
+
+
+def _extract_time_intent_from_text(text: str) -> str:
+    m = (text or "").lower()
+    if "today" in m:
+        return "today"
+    if "yesterday" in m:
+        return "yesterday"
+    if "this week" in m or "last 7 days" in m:
+        return "week"
+    if "this month" in m:
+        return "month"
+    if "last month" in m:
+        return "last_month"
+    if "recent" in m or "lately" in m:
+        return "recent"
+
+    day_window = re.search(r"\blast\s+(\d{1,2})\s+days\b", m)
+    if day_window:
+        try:
+            n = int(day_window.group(1))
+            if 1 <= n <= 60:
+                return f"days_{n}"
+        except Exception:
+            pass
+    return ""
+
+
+def _parse_natural_language_query(raw_query: str) -> dict:
+    cleaned = _clean_text(raw_query)
+    tokens = re.findall(r"[a-z0-9.-]{3,}", cleaned.lower())
+    exact_phrases = _extract_quoted_phrases(raw_query or cleaned)
+    entity_phrases = _extract_entity_phrases(raw_query or cleaned)
+    focus = [t for t in tokens if t not in NL_FILLER_TERMS and not t.isdigit()]
+    dedup_focus = _dedupe_stable(focus)
+    corrected = [_correct_token(t) for t in dedup_focus]
+    expanded_tokens = _expand_tokens(corrected)
+    inferred_tags = _infer_tags_from_signals(cleaned, expanded_tokens)
+
+    compact = " ".join(corrected[:10]) if corrected else " ".join(tokens[:10])
+    expanded = " ".join(expanded_tokens[:16]) if expanded_tokens else compact
+    expanded = _expand_query(expanded or compact or cleaned)
+    relaxed = " ".join(corrected[:3]) if corrected else compact
+    fallback_queries = _dedupe_stable([expanded, compact, relaxed, cleaned])
+    must_include_terms = _dedupe_stable(exact_phrases + entity_phrases + [t for t in corrected[:5] if len(t) >= 4])
+
+    return {
+        "original": cleaned,
+        "focus_terms": corrected,
+        "expanded_terms": expanded_tokens,
+        "inferred_tags": inferred_tags,
+        "inferred_subtags": [t for t in inferred_tags if ":" in t],
+        "all_tag_hints": inferred_tags,
+        "exact_phrases": exact_phrases,
+        "entity_phrases": entity_phrases,
+        "must_include_terms": must_include_terms,
+        "retrieval_query": expanded or compact or cleaned,
+        "fallback_queries": fallback_queries,
+        "domain_hint": _extract_domain_hint(cleaned),
+        "time_hint": _extract_time_intent_from_text(cleaned),
+    }
+
+
+def _apply_domain_hint(items: list, domain_hint: str) -> list:
+    if not domain_hint:
+        return items
+    narrowed = [i for i in items if domain_hint in (_extract_domain(i.get("url", "")) or "")]
+    return narrowed if narrowed else items
+
+
+def _build_structured_chunks(url: str, title: str, content: str, timestamp=None) -> list:
+    title_clean = _clean_text(title)[:220] or "Untitled"
+    domain = _extract_domain(url)
+    ts = _safe_timestamp(timestamp)
+    seed_tokens = re.findall(r"[a-z0-9.-]{3,}", f"{title_clean} {content[:1200]}".lower())
+    tags = _infer_tags_from_signals(f"{title_clean} {url} {content[:2000]}", _expand_tokens(seed_tokens))
+
+    headings, body = _split_body_sections(content)
+    condensed = condense_content(title_clean, body, max_chars=MAX_BODY_FOR_INDEXING_CHARS)
+    if not condensed:
+        return []
+
+    chunks = []
+    chunks.append({
+        "id": f"{int(ts)}-title-{abs(hash(url + title_clean)) % 1000000}",
+        "content": f"Title: {title_clean}",
+        "title": title_clean,
+        "url": url,
+        "keywords": _extract_keywords(title_clean),
+        "timestamp": ts,
+        "domain": domain,
+        "section": "title",
+        "tags": tags,
+    })
+
+    if headings:
+        heading_text = _clean_text(" | ".join(headings))[:MAX_SECTION_TEXT]
+        if heading_text:
+            chunks.append({
+                "id": f"{int(ts)}-head-{abs(hash(url + heading_text)) % 1000000}",
+                "content": heading_text,
+                "title": title_clean,
+                "url": url,
+                "keywords": _extract_keywords(heading_text),
+                "timestamp": ts,
+                "domain": domain,
+                "section": "headings",
+                "tags": tags,
+            })
+
+    body_chunks = _chunk_by_tokens(condensed)
+    for idx, chunk in enumerate(body_chunks):
+        chunk_text = _clean_text(chunk)
+        if len(chunk_text) < 120:
+            continue
+        chunks.append({
+            "id": f"{int(ts)}-body-{idx}-{abs(hash(url + str(idx))) % 1000000}",
+            "content": chunk_text,
+            "title": title_clean,
+            "url": url,
+            "keywords": _extract_keywords(f"{title_clean} {chunk_text}"),
+            "timestamp": ts,
+            "domain": domain,
+            "section": "body",
+            "tags": tags,
+        })
+
+    return chunks[:18]
 
 
 def _clean_text(text: str) -> str:
@@ -264,10 +804,46 @@ def rerank_results(query: str, candidates: list, top_k: int = 3, min_score: floa
     scored.sort(key=lambda x: x.get("score", 0.0), reverse=True)
     return [r for r in scored[:top_k] if r.get("score", 0.0) >= min_score]
 
+
+def _intent_strength(query: str, item: dict) -> float:
+    q_terms = _keyword_set(query)
+    if not q_terms:
+        return 0.0
+    doc_terms = _keyword_set(f"{item.get('title', '')} {item.get('content', '')}")
+    if not doc_terms:
+        return 0.0
+    return float(len(q_terms & doc_terms)) / max(1.0, float(len(q_terms)))
+
+
+def _apply_intent_filter(query: str, items: list) -> list:
+    q_terms = _keyword_set(query)
+    if len(q_terms) < 2:
+        return items
+
+    filtered = []
+    for item in items:
+        strength = _intent_strength(query, item)
+        semantic = float(item.get("semantic_score", item.get("score", 0.0)))
+        if strength >= 0.22 or semantic >= 0.28:
+            enriched = dict(item)
+            enriched["intent_strength"] = round(strength, 4)
+            filtered.append(enriched)
+    return filtered
+
 # -------- Health Check --------
 @app.get("/test")
 def test():
     return {"message": "Backend connected!"}
+
+
+@app.post("/clear-memory")
+def clear_memory():
+    try:
+        clear_all_memories()
+        return {"status": "cleared"}
+    except Exception as e:
+        print("Clear Memory Error:", e)
+        return {"status": "error"}
 
 
 @app.get("/analytics")
@@ -354,6 +930,7 @@ def analytics(limit: int = 1000):
         "total_records": len(records),
         "unique_urls": unique_urls,
         "unique_domains": unique_domains,
+        "clusters": get_cluster_count(),
         "duplicate_urls": duplicate_urls,
         "avg_content_length": round((total_content_chars / len(records)), 1) if records else 0,
         "total_time_spent_ms": total_time_spent_ms,
@@ -386,20 +963,25 @@ def store(page: Page):
         if not page.content.strip():
             return {"status": "empty content skipped"}
 
-        condensed_content = condense_content(page.title, page.content)
-        if not condensed_content:
+        chunks = _build_structured_chunks(
+            url=page.url,
+            title=page.title,
+            content=page.content,
+            timestamp=page.timestamp if page.timestamp is not None else time.time(),
+        )
+        if not chunks:
             return {"status": "empty content skipped"}
 
-        text_for_embedding = f"{page.title}\n\n{condensed_content}".strip()
-        embedding = get_embedding(text_for_embedding)
+        texts = [f"{c.get('title', '')}\n\n{c.get('content', '')}".strip() for c in chunks]
+        vectors = get_embeddings(texts, is_query=False)
+        to_store = []
+        for c, vec in zip(chunks, vectors):
+            item = dict(c)
+            item["embedding"] = vec
+            to_store.append(item)
 
-        add_memory(embedding, {
-            "url": page.url,
-            "title": page.title,
-            "content": condensed_content
-        })
-
-        return {"status": "stored"}
+        add_memories(to_store)
+        return {"status": "stored", "chunks": len(to_store)}
 
     except Exception as e:
         print("Store Error:", e)
@@ -506,14 +1088,7 @@ def _query_variants_for_chat(message: str) -> list:
 
 
 def _extract_time_intent(message: str) -> str:
-    m = (message or "").lower()
-    if "today" in m:
-        return "today"
-    if "yesterday" in m:
-        return "yesterday"
-    if "this week" in m or "last 7 days" in m:
-        return "week"
-    return ""
+    return _extract_time_intent_from_text(message)
 
 
 def _is_metadata_query(message: str) -> bool:
@@ -540,7 +1115,63 @@ def _apply_time_intent_filter(items: list, intent: str) -> list:
     if intent == "week":
         min_date = now.date().fromordinal(now.date().toordinal() - 6)
         return [i for i in items if (_parse_event_datetime(i) and _parse_event_datetime(i).date() >= min_date)]
+    if intent == "month":
+        min_date = now.date().replace(day=1)
+        return [i for i in items if (_parse_event_datetime(i) and _parse_event_datetime(i).date() >= min_date)]
+    if intent == "last_month":
+        first_this = now.date().replace(day=1)
+        last_prev = first_this.fromordinal(first_this.toordinal() - 1)
+        first_prev = last_prev.replace(day=1)
+        return [
+            i
+            for i in items
+            if (_parse_event_datetime(i) and first_prev <= _parse_event_datetime(i).date() <= last_prev)
+        ]
+    if intent == "recent":
+        min_date = now.date().fromordinal(now.date().toordinal() - 2)
+        return [i for i in items if (_parse_event_datetime(i) and _parse_event_datetime(i).date() >= min_date)]
+    if (intent or "").startswith("days_"):
+        try:
+            n = int((intent or "").split("_")[1])
+            if n > 0:
+                min_date = now.date().fromordinal(now.date().toordinal() - (n - 1))
+                return [i for i in items if (_parse_event_datetime(i) and _parse_event_datetime(i).date() >= min_date)]
+        except Exception:
+            pass
     return items
+
+
+def _apply_exact_phrase_filter(items: list, phrases: list) -> list:
+    if not phrases:
+        return items
+    normalized = [str(p or "").strip().lower() for p in phrases if str(p or "").strip()]
+    if not normalized:
+        return items
+    narrowed = []
+    for i in items:
+        hay = f"{i.get('title', '')} {i.get('content', '')}".lower()
+        if any(p in hay for p in normalized):
+            narrowed.append(i)
+    return narrowed if narrowed else items
+
+
+def _apply_must_terms_filter(items: list, terms: list) -> list:
+    if not terms:
+        return items
+    normalized = [str(t or "").strip().lower() for t in terms if str(t or "").strip()]
+    if not normalized:
+        return items
+    scored = []
+    for i in items:
+        hay = f"{i.get('title', '')} {i.get('content', '')}".lower()
+        hits = sum(1 for t in normalized if t in hay)
+        enriched = dict(i)
+        enriched["must_term_hits"] = hits
+        if hits > 0:
+            enriched["score"] = float(enriched.get("score", 0.0)) + (0.03 * min(4, hits))
+        scored.append(enriched)
+    strong = [i for i in scored if i.get("must_term_hits", 0) > 0]
+    return strong if strong else scored
 
 
 def _is_simple_chat_query(message: str) -> bool:
@@ -631,11 +1262,60 @@ def _simple_chat_reply(message: str) -> tuple[str, list]:
 
 
 def retrieve_chat_candidates(user_message: str, per_query_k: int = 14) -> list:
-    variants = _query_variants_for_chat(user_message)
+    parsed_main = _parse_natural_language_query(user_message)
+    fallback_queries = parsed_main.get("fallback_queries") or [parsed_main.get("retrieval_query") or user_message]
+    if DEBUG_QUERY_EXPANSION:
+        print("[QueryDebug][chat]", {
+            "original": user_message,
+            "retrieval_query": parsed_main.get("retrieval_query"),
+            "fallback_queries": fallback_queries,
+            "focus_terms": parsed_main.get("focus_terms"),
+            "inferred_tags": parsed_main.get("inferred_tags"),
+            "inferred_subtags": parsed_main.get("inferred_subtags"),
+            "exact_phrases": parsed_main.get("exact_phrases"),
+            "must_include_terms": parsed_main.get("must_include_terms"),
+            "domain_hint": parsed_main.get("domain_hint"),
+            "time_hint": parsed_main.get("time_hint"),
+        })
+
     pooled = []
-    for v in variants:
-        qv = get_embedding(v)
-        pooled.extend(search_memory(qv, k=per_query_k))
+    for rq in fallback_queries:
+        qv = get_embedding(rq, is_query=True)
+        pooled.extend(search_memory(
+            qv,
+            query_text=rq,
+            k=per_query_k,
+            clusters_to_search=2,
+            query_tags=parsed_main.get("all_tag_hints") or parsed_main.get("inferred_tags") or [],
+        ))
+
+    if not pooled:
+        variants = _query_variants_for_chat(user_message)
+        for v in variants:
+            parsed_v = _parse_natural_language_query(v)
+            query_for_embed = parsed_v.get("retrieval_query") or v
+            qv = get_embedding(query_for_embed, is_query=True)
+            pooled.extend(search_memory(
+                qv,
+                query_text=query_for_embed,
+                k=per_query_k,
+                clusters_to_search=2,
+                query_tags=parsed_main.get("all_tag_hints") or parsed_main.get("inferred_tags") or [],
+            ))
+
+    if not pooled:
+        for rq in fallback_queries:
+            qv = get_embedding(rq, is_query=True)
+            pooled.extend(
+                search_memory(
+                    qv,
+                    query_text=rq,
+                    k=max(per_query_k + 4, 18),
+                    clusters_to_search=3,
+                    min_similarity=0.04,
+                    query_tags=parsed_main.get("all_tag_hints") or parsed_main.get("inferred_tags") or [],
+                )
+            )
 
     # Keep best item per URL+title using semantic score.
     best = {}
@@ -664,8 +1344,12 @@ def retrieve_chat_candidates(user_message: str, per_query_k: int = 14) -> list:
         candidates = list(best.values())
 
     candidates = rerank_results(user_message, candidates, top_k=10)
+    candidates = _apply_exact_phrase_filter(candidates, parsed_main.get("exact_phrases") or [])
+    candidates = _apply_must_terms_filter(candidates, parsed_main.get("must_include_terms") or [])
 
-    intent = _extract_time_intent(user_message)
+    candidates = _apply_domain_hint(candidates, parsed_main.get("domain_hint", ""))
+
+    intent = parsed_main.get("time_hint") or _extract_time_intent(user_message)
     if intent:
         filtered = _apply_time_intent_filter(candidates, intent)
         if filtered:
@@ -915,15 +1599,94 @@ def _add_mike_flair(text: str, user_message: str) -> str:
 
     return trimmed
 
+
+@app.post("/reload-query-knowledge")
+def reload_query_knowledge():
+    try:
+        _apply_query_knowledge_pack()
+        return {
+            "status": "reloaded",
+            "knowledge_file": QUERY_KNOWLEDGE_FILE,
+            "query_expansions": len(QUERY_EXPANSIONS),
+            "synonym_roots": len(SYNONYM_MAP),
+            "tag_roots": len(TAG_KEYWORDS),
+            "subtag_rules": len(SUBTAG_RULES),
+            "filler_terms": len(NL_FILLER_TERMS),
+        }
+    except Exception as e:
+        print("Reload Query Knowledge Error:", e)
+        return {"status": "error", "error": str(e)}
+
 # -------- Query Endpoint --------
 @app.post("/query")
 def query(q: Query):
     try:
-        query_vector = get_embedding(q.query)
+        parsed_query = _parse_natural_language_query(q.query)
+        fallback_queries = parsed_query.get("fallback_queries") or [parsed_query.get("retrieval_query") or q.query]
+        retrieval_query = parsed_query.get("retrieval_query") or q.query
+        if DEBUG_QUERY_EXPANSION:
+            print("[QueryDebug][/query]", {
+                "original": q.query,
+                "retrieval_query": retrieval_query,
+                "fallback_queries": fallback_queries,
+                "focus_terms": parsed_query.get("focus_terms"),
+                "inferred_tags": parsed_query.get("inferred_tags"),
+                "inferred_subtags": parsed_query.get("inferred_subtags"),
+                "exact_phrases": parsed_query.get("exact_phrases"),
+                "must_include_terms": parsed_query.get("must_include_terms"),
+                "domain_hint": parsed_query.get("domain_hint"),
+                "time_hint": parsed_query.get("time_hint"),
+            })
 
-        # Retrieve multiple nearest vectors and keep up to top-3 matches.
-        candidates = search_memory(query_vector, k=MATCH_LIMIT)
-        results = rerank_results(q.query, candidates, top_k=MATCH_LIMIT)
+        candidates = []
+        chosen_stage = "strict"
+        for rq in fallback_queries:
+            query_vector = get_embedding(rq, is_query=True)
+            stage_candidates = search_memory(
+                query_vector,
+                query_text=rq,
+                k=max(MATCH_LIMIT * 4, 12),
+                clusters_to_search=2,
+                query_tags=parsed_query.get("all_tag_hints") or parsed_query.get("inferred_tags") or [],
+            )
+            stage_candidates = _apply_domain_hint(stage_candidates, parsed_query.get("domain_hint", ""))
+            if parsed_query.get("time_hint"):
+                stage_candidates = _apply_time_intent_filter(stage_candidates, parsed_query.get("time_hint"))
+            stage_candidates = _apply_exact_phrase_filter(stage_candidates, parsed_query.get("exact_phrases") or [])
+            stage_candidates = _apply_must_terms_filter(stage_candidates, parsed_query.get("must_include_terms") or [])
+            if stage_candidates:
+                candidates = stage_candidates
+                chosen_stage = f"strict:{rq}"
+                break
+
+        results = rerank_results(q.query, candidates, top_k=MATCH_LIMIT, min_score=0.12)
+        results = _apply_intent_filter(q.query, results)
+
+        if not results:
+            for rq in fallback_queries:
+                query_vector = get_embedding(rq, is_query=True)
+                stage_candidates = search_memory(
+                    query_vector,
+                    query_text=rq,
+                    k=max(MATCH_LIMIT * 5, 16),
+                    clusters_to_search=3,
+                    min_similarity=0.04,
+                    query_tags=parsed_query.get("all_tag_hints") or parsed_query.get("inferred_tags") or [],
+                )
+                stage_candidates = _apply_domain_hint(stage_candidates, parsed_query.get("domain_hint", ""))
+                if parsed_query.get("time_hint"):
+                    stage_candidates = _apply_time_intent_filter(stage_candidates, parsed_query.get("time_hint"))
+                stage_candidates = _apply_exact_phrase_filter(stage_candidates, parsed_query.get("exact_phrases") or [])
+                stage_candidates = _apply_must_terms_filter(stage_candidates, parsed_query.get("must_include_terms") or [])
+                relaxed_results = rerank_results(q.query, stage_candidates, top_k=MATCH_LIMIT, min_score=0.06)
+                relaxed_results = _apply_intent_filter(q.query, relaxed_results)
+                if relaxed_results:
+                    results = relaxed_results
+                    chosen_stage = f"relaxed:{rq}"
+                    break
+
+        if DEBUG_QUERY_EXPANSION:
+            print("[QueryDebug][/query-stage]", {"stage": chosen_stage, "result_count": len(results)})
 
         if not results:
             return {
