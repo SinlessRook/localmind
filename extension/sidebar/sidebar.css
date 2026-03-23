@@ -125,6 +125,7 @@ html, body {
   display: flex;
   align-items: center;
   gap: 10px;
+  position: relative;
 }
 
 .header-meta {
@@ -159,9 +160,9 @@ html, body {
   width: 30px;
   height: 30px;
   border-radius: 8px;
-  background: transparent;
+  background: var(--bg-card);
   border: 1px solid var(--border);
-  color: var(--text-muted);
+  color: var(--text-primary);
   cursor: pointer;
   display: flex;
   align-items: center;
@@ -173,8 +174,83 @@ html, body {
 
 .theme-toggle:hover {
   background: var(--bg-card);
+  color: var(--accent);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-dim);
+}
+
+.record-toggle-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 8px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  color: var(--success);
+  font-family: 'DM Mono', monospace;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  flex-shrink: 0;
+}
+
+.record-toggle-btn:hover {
+  border-color: var(--success);
+  box-shadow: 0 0 0 2px rgba(74, 222, 128, 0.16);
+}
+
+.record-toggle-btn.paused {
+  color: var(--danger);
+  border-color: rgba(224, 82, 82, 0.45);
+  background: var(--danger-dim);
+}
+
+.record-toggle-btn.paused:hover {
+  border-color: var(--danger);
+  box-shadow: 0 0 0 2px rgba(224, 82, 82, 0.16);
+}
+
+.record-icon {
+  font-size: 12px;
+  line-height: 1;
+}
+
+.record-label {
+  line-height: 1;
+}
+
+.settings-menu {
+  position: absolute;
+  top: 36px;
+  right: 0;
+  min-width: 168px;
+  background: var(--bg-menu);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: var(--shadow-menu);
+  padding: 6px;
+  z-index: 50;
+}
+
+.settings-item {
+  width: 100%;
+  border: none;
+  background: transparent;
   color: var(--text-primary);
-  border-color: var(--border);
+  text-align: left;
+  font-family: 'DM Sans', system-ui, sans-serif;
+  font-size: 12px;
+  border-radius: 8px;
+  padding: 8px 10px;
+  cursor: pointer;
+}
+
+.settings-item:hover {
+  background: var(--bg-card-hover);
 }
 
 /* ── Search Zone ──────────────────────────────────────────────────── */

@@ -18,8 +18,16 @@
       </button>
         <div class="header-right">
           <span class="header-meta" id="indexedCount">— pages</span>
-          <button class="theme-toggle" id="blacklistBtn" title="Manage blacklist">🚫</button>
-          <button class="theme-toggle" id="themeToggle" title="Toggle light/dark mode">🌙</button>
+          <button class="record-toggle-btn" id="recordToggleBtn" title="Recording status">
+            <span class="record-icon" id="recordIcon" aria-hidden="true">⏺</span>
+            <span class="record-label" id="recordLabel">REC</span>
+          </button>
+          <button class="theme-toggle" id="settingsBtn" title="Open controls">⚙</button>
+          <div class="settings-menu hidden" id="settingsMenu">
+            <button class="settings-item" id="themeToggle" title="Toggle light/dark mode">Theme</button>
+            <button class="settings-item" id="openDashboardBtn" title="Open Dashboard">Dashboard</button>
+            <button class="settings-item" id="blacklistBtn" title="Manage blacklist">Blocked Sites</button>
+          </div>
         </div>
     </header>
 
@@ -63,7 +71,6 @@
           <button class="source-chip active" data-filter="all">All</button>
           <button class="source-chip" data-filter="bookmarks">Bookmarks</button>
           <button class="source-chip" data-filter="visited">Visited Pages</button>
-          <button class="source-chip" data-filter="history">History</button>
         </div>
         <div class="query-answer hidden" id="queryAnswer"></div>
         <div id="resultsList" class="card-list"></div>
