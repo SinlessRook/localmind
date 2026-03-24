@@ -5,15 +5,44 @@ const queryTextEl = document.getElementById('queryText');
 const closeBtn = document.getElementById('closeBtn');
 
 // Get query passed via URL hash from search-trigger.js
-const query = decodeURIComponent(location.hash.slice(1)) || '';
-queryTextEl.textContent = query ? `"${query}"` : '—';
+let currentQuery = decodeURIComponent(location.hash.slice(1)) || '';
+let requestSeq = 0;
+queryTextEl.textContent = currentQuery ? `"${currentQuery}"` : '—';
 
 // ── Load results ──────────────────────────────────────────────────────────────
 
-chrome.runtime.sendMessage({ type: 'SEARCH_QUERY', query }, (response) => {
-  const results = response?.results || [];
-  renderResults(results);
+loadResults(currentQuery);
+
+window.addEventListener('message', (event) => {
+  if (event?.data?.type !== 'LM_QUERY_UPDATE') return;
+  const next = String(event.data.query || '').trim();
+  if (next === currentQuery) return;
+  currentQuery = next;
+  queryTextEl.textContent = currentQuery ? `"${currentQuery}"` : '—';
+  loadResults(currentQuery);
 });
+
+function loadResults(query) {
+  const q = String(query || '').trim();
+  if (!q) {
+    renderResults([]);
+    return;
+  }
+
+  const runId = ++requestSeq;
+  resultsEl.innerHTML = `
+    <div class="loading">
+      <div class="skeleton"></div>
+      <div class="skeleton"></div>
+      <div class="skeleton"></div>
+    </div>`;
+
+  chrome.runtime.sendMessage({ type: 'SEARCH_QUERY', query: q }, (response) => {
+    if (runId !== requestSeq) return;
+    const results = response?.results || [];
+    renderResults(results);
+  });
+}
 
 function renderResults(results) {
   if (results.length === 0) {
@@ -35,7 +64,7 @@ function renderResults(results) {
     card.style.animationDelay = `${i * 60}ms`;
 
     const domain = extractDomain(page.url);
-    const title = highlight(page.title || domain, query);
+    const title = highlight(page.title || domain, currentQuery);
     const score = page.score !== undefined
       ? `<span class="card-score">${Math.round(page.score * 100)}%</span>`
       : '';
