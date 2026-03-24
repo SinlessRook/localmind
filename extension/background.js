@@ -27,6 +27,7 @@ const BOOKMARK_RESYNC_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const BOOKMARK_FETCH_TIMEOUT_MS = 5000;
 const INSTALL_TS_KEY = 'lm_install_timestamp';
 const RECORDING_ENABLED_KEY = 'lm_recording_enabled';
+const SHOW_INJECTED_SUGGESTIONS_KEY = 'lm_show_injected_suggestions';
 const DEBUG_QUERY_EXPANSION = true;
 const LIVE_VERIFY_TOP_N = 6;
 const LIVE_VERIFY_TIMEOUT_MS = 1800;
@@ -207,6 +208,18 @@ async function handleMessage(message, sender) {
     case 'SET_RECORDING_STATE': {
       const enabled = message.enabled !== false;
       await chrome.storage.local.set({ [RECORDING_ENABLED_KEY]: enabled });
+      return { ok: true, enabled };
+    }
+
+    case 'GET_INJECTED_SUGGESTIONS_STATE': {
+      const data = await chrome.storage.local.get(SHOW_INJECTED_SUGGESTIONS_KEY);
+      const enabled = data[SHOW_INJECTED_SUGGESTIONS_KEY] !== false;
+      return { enabled };
+    }
+
+    case 'SET_INJECTED_SUGGESTIONS_STATE': {
+      const enabled = message.enabled !== false;
+      await chrome.storage.local.set({ [SHOW_INJECTED_SUGGESTIONS_KEY]: enabled });
       return { ok: true, enabled };
     }
 
@@ -1147,6 +1160,11 @@ chrome.runtime.onInstalled.addListener(async () => {
   const recordingMeta = await chrome.storage.local.get(RECORDING_ENABLED_KEY);
   if (typeof recordingMeta[RECORDING_ENABLED_KEY] !== 'boolean') {
     await chrome.storage.local.set({ [RECORDING_ENABLED_KEY]: true });
+  }
+
+  const injectedSuggestionsMeta = await chrome.storage.local.get(SHOW_INJECTED_SUGGESTIONS_KEY);
+  if (typeof injectedSuggestionsMeta[SHOW_INJECTED_SUGGESTIONS_KEY] !== 'boolean') {
+    await chrome.storage.local.set({ [SHOW_INJECTED_SUGGESTIONS_KEY]: true });
   }
 
   await initializeSemanticTabIndexer();

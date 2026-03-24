@@ -18,6 +18,7 @@ const recordIcon = document.getElementById('recordIcon');
 const recordLabel = document.getElementById('recordLabel');
 const settingsBtn = document.getElementById('settingsBtn');
 const settingsMenu = document.getElementById('settingsMenu');
+const toggleInjectedSuggestionsBtn = document.getElementById('toggleInjectedSuggestionsBtn');
 
 let refreshTimeout = null;
 let activeSourceFilter = 'all';
@@ -32,6 +33,7 @@ let activeDropdown = null;
 /** True only when the current search text came from GET_PENDING_QUERY (SERP auto-fill). */
 let searchFromAutoSerp = false;
 let recordingEnabled = true;
+let injectedSuggestionsEnabled = true;
 
 
 function applyRecordingState(enabled) {
@@ -53,6 +55,22 @@ function applyRecordingState(enabled) {
 async function initRecordingState() {
   const response = await bgMessage({ type: 'GET_RECORDING_STATE' });
   applyRecordingState(response?.enabled !== false);
+}
+
+function applyInjectedSuggestionsState(enabled) {
+  injectedSuggestionsEnabled = enabled !== false;
+  if (!toggleInjectedSuggestionsBtn) return;
+  toggleInjectedSuggestionsBtn.textContent = injectedSuggestionsEnabled
+    ? 'Search Suggestions: ON'
+    : 'Search Suggestions: OFF';
+  toggleInjectedSuggestionsBtn.style.color = injectedSuggestionsEnabled
+    ? 'var(--success)'
+    : 'var(--danger)';
+}
+
+async function initInjectedSuggestionsState() {
+  const response = await bgMessage({ type: 'GET_INJECTED_SUGGESTIONS_STATE' });
+  applyInjectedSuggestionsState(response?.enabled !== false);
 }
 
 // ── Theme ─────────────────────────────────────────────────────────────────────
@@ -124,6 +142,7 @@ document.getElementById('openHomeBtn')?.addEventListener('click', () => {
 async function init() {
   await initTheme();
   await initRecordingState();
+  await initInjectedSuggestionsState();
   await loadTimeline();
   await updateIndexCount();
 }
@@ -143,6 +162,14 @@ settingsBtn?.addEventListener('click', (event) => {
 
 settingsMenu?.addEventListener('click', (event) => {
   event.stopPropagation();
+});
+
+toggleInjectedSuggestionsBtn?.addEventListener('click', async () => {
+  const next = !injectedSuggestionsEnabled;
+  const response = await bgMessage({ type: 'SET_INJECTED_SUGGESTIONS_STATE', enabled: next });
+  applyInjectedSuggestionsState(response?.enabled !== false);
+  showToast(response?.enabled === false ? 'Search suggestions hidden' : 'Search suggestions shown');
+  settingsMenu?.classList.add('hidden');
 });
 
 // ── Timeline ──────────────────────────────────────────────────────────────────
